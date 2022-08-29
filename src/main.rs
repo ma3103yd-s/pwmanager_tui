@@ -32,18 +32,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    write_to_file(None, &pw_e)?;
     //Password::encrypt_from_input("passwords.json")?;
     //Password::decrypt_from_input("passwords.json", "password.der")?;
-    let mut module_test = PasswordEntries::new();
-    add_password_32(&mut module_test, "Facebook");
-    add_password_32(&mut module_test, "Amazon");
-    let mod_list = ModuleList::get_module_files()?;
-    let mut app = ModuleUI::new(mod_list);
+    //let mut module_test = PasswordEntries::new();
+    //add_password_32(&mut module_test, "Facebook");
+    //add_password_32(&mut module_test, "Amazon");
+
+    //ModuleList::create_module("shopping", &module_test)?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mod_list = ModuleList::get_module_files()?;
+    //ModuleList::encrypt_module("shopping", "password")?;
+
+    let mut app = ModuleUI::new(mod_list);
+    //println!("{:?}", mod_list.modules);
 
     // create app and run it
+
     let res = run_app(&mut terminal, app);
 
     // restore terminal
@@ -55,11 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     terminal.show_cursor()?;
 
-    if let Err(err) = res {
-        println!("{:?}", err)
-    }
+    //    if let Err(err) = res {
+    //        println!("{:?}", err)
+    //    }
 
     Ok(())
-
-    //println!("Module list contains {:?}", mod_list.modules);
 }
