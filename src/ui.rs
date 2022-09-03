@@ -212,7 +212,7 @@ fn draw_module_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI
 fn draw_input_prompt<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
+        .margin(1)
         .constraints([Constraint::Length(2), Constraint::Length(2)].as_ref())
         .split(area);
     let text = match app.input_to {
@@ -226,14 +226,16 @@ fn draw_input_prompt<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleU
     let paragraph = Paragraph::new(Span::styled(
         text,
         Style::default().add_modifier(Modifier::SLOW_BLINK),
-    ));
+    ))
+    .wrap(Wrap { trim: true });
     let block = Block::default().title("Prompt").borders(Borders::ALL);
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
     f.render_widget(paragraph, chunks[0]);
     if app.input_to == InputTo::Add {
         let input_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(20), Constraint::Length(20)].as_ref())
+            .constraints([Constraint::Length(15), Constraint::Length(20)].as_ref())
             .split(chunks[1]);
         let mut x_coord = 0_u16;
         let y_coord = input_chunks[0].y + 1;
@@ -268,7 +270,6 @@ fn draw_input_prompt<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleU
         let input = Paragraph::new(app.input_string.as_ref())
             .style(Style::default().fg(Color::Yellow))
             .block(Block::default().borders(Borders::all()).title("Input"));
-        f.render_widget(Clear, chunks[1]);
         f.render_widget(input, chunks[1]);
         if app.input_mode == InputMode::Inputing {
             f.set_cursor(
@@ -727,7 +728,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut ModuleUI) {
     //        .margin(2)
     //        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
     //        .split(chunks[0]);
-    let area = centered_rect(50, 20, f.size());
+    let area = centered_rect(60, 20, f.size());
 
     if app.display_module == true {
         draw_module_selected(f, chunks[1], app);
