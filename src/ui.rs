@@ -308,11 +308,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 fn draw_command_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .margin(2)
+        .margin(1)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
     let block = Block::default().title("Key Commands").borders(Borders::ALL);
-    let style = Style::default().fg(Color::LightBlue);
+    let style = Style::default().fg(Color::Blue);
     let text1 = vec![
         Spans::from(vec![
             Span::styled("g", style),
@@ -715,8 +715,7 @@ pub fn run_app<B: Backend>(
 fn ui<B: Backend>(f: &mut Frame<B>, app: &mut ModuleUI) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+        .constraints([Constraint::Length(28), Constraint::Length(5)])
         .split(f.size());
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
