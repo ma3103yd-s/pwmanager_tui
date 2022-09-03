@@ -1,5 +1,4 @@
 use rand::distributions::{Alphanumeric, Uniform};
-use rand::rngs::OsRng;
 use rand::rngs::ThreadRng;
 use rand::seq::index::{self, sample};
 use rand::{thread_rng, Rng};
@@ -65,14 +64,39 @@ pub struct ModuleList<'a> {
     )>,
 }
 
-impl ModuleList<'_> {
+impl<'b> ModuleList<'b> {
     pub fn new() -> Self {
         Self {
             modules: Vec::new(),
         }
     }
 
-    pub fn create_module(
+    pub fn add_module(
+        &mut self,
+        name: &str,
+        entries: PasswordEntries<'b>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
+        let file_name = format!("{}.json", name);
+        let file_name = base_path.join(file_name);
+        return match File::open(&file_name) {
+            Ok(_) => Err(Box::new(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Module already exists.",
+            ))),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    self.modules
+                        .push((Cow::Owned(name.to_owned()), None, Some(entries)));
+                    Ok(())
+                } else {
+                    Err(Box::new(e))
+                }
+            }
+        };
+    }
+
+    pub fn write_module(
         name: &str,
         entries: &PasswordEntries,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -84,19 +108,20 @@ impl ModuleList<'_> {
         }
         let file_name = format!("{}.json", name);
         let file_name = base_path.join(file_name);
-        let f = match File::open(&file_name) {
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Module already exists.",
-            )),
-            Err(e) => {
-                if e.kind() == io::ErrorKind::NotFound {
-                    File::create(&file_name)
-                } else {
-                    Err(e)
-                }
-            }
-        }?;
+        let f = File::create(&file_name)?;
+        //        let f = match File::open(&file_name) {
+        //            Ok(_) => Err(io::Error::new(
+        //                io::ErrorKind::AlreadyExists,
+        //                "Module already exists.",
+        //            )),
+        //            Err(e) => {
+        //                if e.kind() == io::ErrorKind::NotFound {
+        //                    File::create(&file_name)
+        //                } else {
+        //                    Err(e)
+        //                }
+        //            }
+        //        }?;
         serde_json::to_writer(f, entries)?;
         Ok(())
     }
@@ -109,14 +134,18 @@ impl ModuleList<'_> {
         ),
         password: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let file_name: PathBuf = [
+        let file_path: PathBuf = [
             env::var(HOME_ENV)?,
             ".pwmanager/".to_owned(),
             entry.0.to_string(),
         ]
         .iter()
         .collect();
-        password_encrypt_file(password, file_name.to_string_lossy().borrow())?;
+        let file_name = file_path.to_string_lossy();
+        let file = format!("{}.json", file_name);
+        let der_file = format!("{}.der", file_name);
+        password_encrypt_file(password, &file, &der_file)?;
+        entry.1 = Some(Cow::Owned(der_file));
         Ok(())
     }
 
@@ -159,6 +188,10 @@ impl ModuleList<'_> {
 pub struct Password<'a>(pub Cow<'a, str>);
 
 impl Password<'_> {
+    pub fn new_from(password: &str) -> Self {
+        Self(Cow::Owned(password.to_owned()))
+    }
+
     pub fn new_password32() -> Self {
         Self(Cow::from(Self::generate_random_string(32)))
     }
@@ -201,10 +234,15 @@ impl Password<'_> {
         encrypt_file(self.get(), file, salt, iv)
     }
 
-    pub fn encrypt_from_input(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn encrypt_from_input(
+        file: &str,
+        der_file: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        password_encrypt_file(&input, file)?;
+
+        let mut stdin = io::stdin();
+        stdin.read_line(&mut input)?;
+        password_encrypt_file(&input, file, der_file)?;
         Ok(())
     }
 
@@ -219,6 +257,18 @@ impl Password<'_> {
     }
 }
 
+pub fn create_and_save_to_der(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let iterations = 20_000;
+    let salt = Password::generate_random_string(8);
+    let iv_string = Password::generate_random_string(16);
+    let iv: &[u8; 16] = iv_string.as_bytes().try_into().unwrap();
+    let params = Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt.as_bytes(), iv)
+        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+    let encrypt_scheme = EncryptionScheme::Pbes2(params);
+    save_to_der(file, &encrypt_scheme)?;
+    Ok(())
+}
+
 pub fn encrypt_file<'a>(
     password: &str,
     file: &str,
@@ -228,7 +278,7 @@ pub fn encrypt_file<'a>(
     let mut f = File::open(file)?;
     let mut content = Vec::new();
     f.read_to_end(&mut content)?;
-    let iterations = 310_000;
+    let iterations = 20_000;
     let params = Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt, iv)
         .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
     let encrypt_scheme = EncryptionScheme::Pbes2(params);
@@ -272,16 +322,34 @@ pub fn decrypt_file<'a>(
     Ok(())
 }
 
-pub fn password_encrypt_file(password: &str, file: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let js_file = format!("{}.json", file);
-    let der_file = format!("{}.der", file);
+pub fn password_encrypt_file(
+    password: &str,
+    file: &str,
+    der_file: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let salt = Password::generate_random_string(8);
     let iv_string = Password::generate_random_string(16);
-    println!("iv string is {:?}", iv_string);
-    println!("iv string is {:?}", iv_string.as_bytes());
     let iv: &[u8; 16] = iv_string.as_bytes().try_into().unwrap();
-    let ec_scheme = encrypt_file(password, &js_file, &salt.as_bytes(), iv)?;
-    save_to_der(&der_file, &ec_scheme)?;
+    let ec_scheme = encrypt_file(password, file, &salt.as_bytes(), iv)?;
+    save_to_der(der_file, &ec_scheme)?;
+    Ok(())
+}
+
+pub fn encrypt_from_der(
+    password: &str,
+    file: &str,
+    der_file: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut f = File::open(file)?;
+    let mut content = Vec::new();
+    f.read_to_end(&mut content)?;
+    let doc = Document::read_der_file(der_file)?;
+    let ec_scheme: EncryptionScheme = doc.decode_msg()?;
+    let encrypted_content = ec_scheme
+        .encrypt(password, &content)
+        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+    let mut f = File::create(file)?;
+    f.write_all(&encrypted_content)?;
     Ok(())
 }
 
