@@ -1,9 +1,8 @@
 use rand::distributions::{Alphanumeric, Uniform};
-use rand::rngs::ThreadRng;
-use rand::seq::index::{self, sample};
+use rand::seq::index::sample;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use std::env;
@@ -16,10 +15,11 @@ use std::path::{Path, PathBuf};
 use der::Document;
 use pkcs5::der::{Decode, Encode};
 use pkcs5::{pbes2::Parameters, EncryptionScheme};
-use std::ffi::OsStr;
 
+/* Type declaration for entry of a password */
 pub type PasswordEntries<'a> = HashMap<Cow<'a, str>, Password<'a>>;
 
+/* Home directory path depending on OS. Used to create pwmanager directory */
 pub const HOME_ENV: &str = if cfg!(windows) {
     "USERPROFILE"
 } else if cfg!(unix) {
@@ -56,6 +56,7 @@ pub fn read_from_file<'a, 'b>(file: Option<&'b str>) -> io::Result<PasswordEntri
     return Ok(pw_entry);
 }
 
+/* Struct for list of modules */
 pub struct ModuleList<'a> {
     pub modules: Vec<(
         Cow<'a, str>,
@@ -102,26 +103,10 @@ impl<'b> ModuleList<'b> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
         base_path.push(".pwmanager");
-        if (!(base_path.try_exists()?)) {
-            fs::create_dir(base_path)?;
-            return Ok(());
-        }
+
         let file_name = format!("{}.json", name);
         let file_name = base_path.join(file_name);
         let f = File::create(&file_name)?;
-        //        let f = match File::open(&file_name) {
-        //            Ok(_) => Err(io::Error::new(
-        //                io::ErrorKind::AlreadyExists,
-        //                "Module already exists.",
-        //            )),
-        //            Err(e) => {
-        //                if e.kind() == io::ErrorKind::NotFound {
-        //                    File::create(&file_name)
-        //                } else {
-        //                    Err(e)
-        //                }
-        //            }
-        //        }?;
         serde_json::to_writer(f, entries)?;
         Ok(())
     }
@@ -184,20 +169,25 @@ impl<'b> ModuleList<'b> {
     }
 }
 
+/* Struct to hold a password */
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Password<'a>(pub Cow<'a, str>);
 
 impl Password<'_> {
+    /* Creates a password from the given password*/
     pub fn new_from(password: &str) -> Self {
         Self(Cow::Owned(password.to_owned()))
     }
-
+    /* Generate random 32 byte password */
     pub fn new_password32() -> Self {
         Self(Cow::from(Self::generate_random_string(32)))
     }
+    /* Generate a random 64 byte password*/
     pub fn new_password64() -> Self {
         Self(Cow::from(Self::generate_random_string(64)))
     }
+    /* Generates a random string with a guaranteed special character and capital letter of length
+     * len*/
     pub fn generate_random_string(len: usize) -> String {
         let mut rng = thread_rng();
         let spec_char: u8 = rng.sample(Uniform::new(33, 47));
@@ -233,30 +223,8 @@ impl Password<'_> {
     ) -> Result<EncryptionScheme<'a>, Box<dyn std::error::Error>> {
         encrypt_file(self.get(), file, salt, iv)
     }
-
-    pub fn encrypt_from_input(
-        file: &str,
-        der_file: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut input = String::new();
-
-        let mut stdin = io::stdin();
-        stdin.read_line(&mut input)?;
-        password_encrypt_file(&input, file, der_file)?;
-        Ok(())
-    }
-
-    pub fn decrypt_from_input(
-        file: &str,
-        der_file: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        decrypt_from_der(&input, file, der_file)?;
-        Ok(())
-    }
 }
-
+/* Creates an encryption scheme and saves to a file with name file */
 pub fn create_and_save_to_der(file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let iterations = 20_000;
     let salt = Password::generate_random_string(8);
@@ -269,6 +237,7 @@ pub fn create_and_save_to_der(file: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/* Encrypt file using the given password, salt and iv. Return the resulting encryption scheme */
 pub fn encrypt_file<'a>(
     password: &str,
     file: &str,
@@ -316,12 +285,12 @@ pub fn decrypt_file<'a>(
         .decrypt(password, &encrypted_content)
         .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
 
-    let content = std::str::from_utf8(&decrypted_content)?;
     let mut f = File::create(file)?;
     f.write_all(&decrypted_content)?;
     Ok(())
 }
 
+/* Encrypt file with password, hash it and save hash to a file*/
 pub fn password_encrypt_file(
     password: &str,
     file: &str,
@@ -335,6 +304,7 @@ pub fn password_encrypt_file(
     Ok(())
 }
 
+/* Encrypt file with password using the scheme and hash from der_file */
 pub fn encrypt_from_der(
     password: &str,
     file: &str,
@@ -353,6 +323,7 @@ pub fn encrypt_from_der(
     Ok(())
 }
 
+/* Decrypt file with password and scheme from der file */
 pub fn decrypt_from_der(
     password: &str,
     file: &str,
@@ -360,7 +331,5 @@ pub fn decrypt_from_der(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let doc = Document::read_der_file(der_file)?;
     let ec_scheme: EncryptionScheme = doc.decode_msg()?;
-    //    let ec_scheme = EncryptionScheme::from_der(&content)
-    //        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
     decrypt_file(password, file, &ec_scheme)
 }

@@ -1,19 +1,14 @@
 pub mod password;
 pub mod ui;
-use std::io::{self, BufRead, Read, Write};
 
-use crate::password::decrypt_from_der;
-use crate::password::{add_password_32, read_from_file, write_to_file, Password, PasswordEntries};
+use crate::password::PasswordEntries;
 use crate::password::{ModuleList, HOME_ENV};
 use crate::ui::{run_app, ModuleUI};
+use std::io;
 
-use password::encrypt_from_der;
-use password::{create_and_save_to_der, password_encrypt_file};
-use rand::rngs::OsRng;
-use std::borrow::Cow;
 use std::env;
 use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -26,10 +21,15 @@ use tui::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
     let mut file = env::var(HOME_ENV)?;
-    file.push_str("/.pwmanager/General.json");
+    base_path.push(".pwmanager");
+    if (!(base_path.try_exists()?)) {
+        fs::create_dir(&base_path)?;
+    }
+    base_path.push("General.json");
     let mut mod_list = ModuleList::get_module_files()?;
-    if let Err(_) = File::open(&file) {
+    if let Err(_) = File::open(&base_path) {
         let et = PasswordEntries::new();
         mod_list.add_module("General", et)?;
     }
@@ -39,11 +39,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = ModuleUI::new(mod_list);
+    let app = ModuleUI::new(mod_list);
 
     // create app and run it
 
-    let res = run_app(&mut terminal, app)?;
+    run_app(&mut terminal, app)?;
 
     // restore terminal
     disable_raw_mode()?;

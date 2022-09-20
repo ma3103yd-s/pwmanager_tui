@@ -1,9 +1,7 @@
 use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsStr;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -22,10 +20,10 @@ use tui::{
 };
 
 use crate::password::{
-    create_and_save_to_der, decrypt_from_der, encrypt_from_der, password_encrypt_file,
-    read_from_file, ModuleList, Password, PasswordEntries, HOME_ENV,
+    create_and_save_to_der, decrypt_from_der, encrypt_from_der, read_from_file, ModuleList,
+    Password, PasswordEntries, HOME_ENV,
 };
-
+/* Struct to hold UI data */
 pub struct ModuleUI<'a> {
     module_list: ModuleList<'a>,
     state: ListState,
@@ -42,17 +40,13 @@ pub struct ModuleUI<'a> {
     display_error: bool,
     error_message: String,
 }
-
-enum PasswordMode {
-    PasswordEntered,
-    PasswordEntering,
-    NoPassword,
-}
+/* Input Mode of the UI*/
 #[derive(PartialEq, Eq)]
 enum InputMode {
     Normal,
     Inputing,
 }
+/* The part of the UI we are inputing to*/
 #[derive(PartialEq, Eq)]
 enum InputTo {
     Nothing,
@@ -62,12 +56,13 @@ enum InputTo {
     Password,
     Add,
 }
-
+/* Selection of module or password*/
 enum Selection {
     Modules,
     Passwords,
 }
 
+/* Methods for the UI*/
 impl<'a> ModuleUI<'a> {
     pub fn new(module_list: ModuleList<'a>) -> Self {
         Self {
@@ -87,7 +82,7 @@ impl<'a> ModuleUI<'a> {
             error_message: String::new(),
         }
     }
-
+    /* Implements selection of passwords*/
     pub fn next_password(&mut self) {
         if let Some(i) = self.module_index {
             match self.module_list.modules.get(i).and_then(|x| x.2.as_ref()) {
@@ -137,7 +132,7 @@ impl<'a> ModuleUI<'a> {
         self.module_list = items;
         self.state = ListState::default();
     }
-
+    /* Implements selection of modules */
     pub fn next(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
@@ -152,8 +147,7 @@ impl<'a> ModuleUI<'a> {
         self.state.select(Some(i));
     }
 
-    // Select the previous item. This will not be reflected until the widget is drawn in the
-    // `Terminal::draw` callback using `Frame::render_stateful_widget`.
+    // Select the previous item.
     pub fn previous(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
@@ -174,7 +168,7 @@ impl<'a> ModuleUI<'a> {
         self.state.select(None);
     }
 }
-
+/* Draw the list of modules */
 fn draw_module_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI) {
     let block = Block::default().title("Modules").borders(Borders::ALL);
 
@@ -208,7 +202,7 @@ fn draw_module_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI
         .highlight_symbol(">");
     f.render_stateful_widget(list, area, &mut app.state);
 }
-
+/* Draws the input prompt depending on what we are inputing to */
 fn draw_input_prompt<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -232,6 +226,7 @@ fn draw_input_prompt<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleU
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     f.render_widget(paragraph, chunks[0]);
+    // Need  to handle case of manual password differently since it needs two inputs
     if app.input_to == InputTo::Add {
         let input_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -280,6 +275,7 @@ fn draw_input_prompt<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleU
     }
 }
 
+/* Draws a centered rectangle on r with the given width and height in percentage */
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -305,7 +301,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         )
         .split(popup_layout[1])[1]
 }
-
+/* Draws the list of commands */
 fn draw_command_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -378,7 +374,7 @@ fn draw_command_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleU
     f.render_widget(pg1, chunks[0]);
     f.render_widget(pg2, chunks[1]);
 }
-
+/* Reads an unencrypted module from the corresponding file */
 pub fn read_unencrypted_module<'a>(
     m: &mut (
         Cow<'a, str>,
@@ -395,7 +391,7 @@ pub fn read_unencrypted_module<'a>(
     m.2 = Some(read_from_file(Some(file.borrow()))?);
     Ok(())
 }
-
+/* Reads a module from an encrypted file.*/
 pub fn read_encrypted_module<'a>(
     password: &str,
     m: &mut (
@@ -417,7 +413,7 @@ pub fn read_encrypted_module<'a>(
     }
     Ok(())
 }
-
+/* Displays the passwords of the selected module */
 fn draw_module_selected<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI) {
     let block = Block::default().title("Passwords").borders(Borders::ALL);
     let entries: Option<Vec<Row>> = app
@@ -458,6 +454,8 @@ fn draw_module_selected<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut Modu
     }
 }
 
+/* Encrypts all files that were decrypted. Resets all inputs, passwords and modules to prevent
+ * leakage */
 pub fn clean_up(app: &mut ModuleUI) -> Result<(), Box<dyn std::error::Error>> {
     for row in app.module_list.modules.iter_mut() {
         let name = row.0.borrow();
@@ -479,6 +477,7 @@ pub fn clean_up(app: &mut ModuleUI) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/* Popup for displaying errors.*/
 pub fn display_error<B: Backend>(f: &mut Frame<B>, area: Rect, message: &str) {
     let p = Paragraph::new(Text::styled(message, Style::default().fg(Color::White)))
         .alignment(Alignment::Center)
@@ -487,13 +486,16 @@ pub fn display_error<B: Backend>(f: &mut Frame<B>, area: Rect, message: &str) {
     f.render_widget(Clear, area);
     f.render_widget(p, area);
 }
-
+/* Runs the app */
 pub fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     mut app: ModuleUI,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        terminal.draw(|f| ui(f, &mut app))?;
+        terminal.draw(|f| ui(f, &mut app)).map_err(|e| {
+            clean_up(&mut app).expect("Failed to clean up on error");
+            e
+        })?;
 
         if let Event::Key(key) = event::read()? {
             match app.input_mode {
@@ -665,7 +667,6 @@ pub fn run_app<B: Backend>(
                                     app.input_to = InputTo::Nothing;
                                     app.input_mode = InputMode::Normal;
                                     app.input_string = String::new();
-                                    //app.module_index = None;
                                 }
                             }
                             InputTo::Module => {
@@ -713,21 +714,20 @@ pub fn run_app<B: Backend>(
     }
 }
 
+/* Calls the different UI functions and provides layout*/
 fn ui<B: Backend>(f: &mut Frame<B>, app: &mut ModuleUI) {
+    let mod_size: u16 = app.module_list.modules.len() as u16;
+    let command_size: u16 = 7;
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(28), Constraint::Length(5)])
+        .constraints([Constraint::Min(10), Constraint::Length(command_size + 2)])
         .split(f.size());
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .margin(2)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
         .split(v_chunks[0]);
-    //    let v_chunks = Layout::default()
-    //        .direction(Direction::Vertical)
-    //        .margin(2)
-    //        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-    //        .split(chunks[0]);
+
     let area = centered_rect(60, 20, f.size());
 
     if app.display_module == true {
