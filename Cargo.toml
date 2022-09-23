@@ -9,8 +9,10 @@ edition = "2021"
 rand = "*"
 serde = {version = "*", features=["derive"]}
 serde_json = "*"
-pkcs5 = {version = "0.5.0", features=["alloc", "pbes2"]}
-der = {version = "*", features=["alloc", "std"]}
+#pkcs5 = {version = "0.5.0", features=["alloc", "pbes2"]}
+#der = {version = "*", features=["alloc", "std"]}
+chacha20poly1305 = "0.10.1"
 tui = "*"
 crossterm = "*"
 clipboard = "*"
+argon2 = "0.4.1"

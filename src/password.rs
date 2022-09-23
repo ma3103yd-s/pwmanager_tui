@@ -12,9 +12,11 @@ use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use der::Document;
-use pkcs5::der::{Decode, Encode};
-use pkcs5::{pbes2::Parameters, EncryptionScheme};
+
+//use der::Document;
+
+//use pkcs5::der::{Decode, Encode};
+//use pkcs5::{pbes2::Parameters, EncryptionScheme};
 
 /* Type declaration for entry of a password */
 pub type PasswordEntries<'a> = HashMap<Cow<'a, str>, Password<'a>>;
@@ -238,25 +240,28 @@ pub fn create_and_save_to_der(file: &str) -> Result<(), Box<dyn std::error::Erro
 }
 
 /* Encrypt file using the given password, salt and iv. Return the resulting encryption scheme */
-pub fn encrypt_file<'a>(
+pub fn encrypt_file(
     password: &str,
     file: &str,
-    salt: &'a [u8],
-    iv: &'a [u8; 16],
-) -> Result<EncryptionScheme<'a>, Box<dyn std::error::Error>> {
+) -> Result<(ChaCha20Poly1305 Nonce), Box<dyn std::error::Error>> {
     let mut f = File::open(file)?;
     let mut content = Vec::new();
     f.read_to_end(&mut content)?;
-    let iterations = 20_000;
-    let params = Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt, iv)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let encrypt_scheme = EncryptionScheme::Pbes2(params);
-    let encrypted_content = encrypt_scheme
-        .encrypt(password, &content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_passwod(password.as_bytes(), &salt)?;
+
+
+    let cipher = ChaCha20Poly1305::new_from_slice(&hash)?;
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let payload = Payload {
+        msg: &content,
+        aad: file,
+    };
+    let encrypted_content = cipher.encrypt(&nonce, payload)?;
     let mut f = File::create(file)?;
     f.write_all(&encrypted_content)?;
-    Ok(encrypt_scheme)
+    Ok((cipher, nonce))
 }
 
 pub fn save_to_der<'a>(
