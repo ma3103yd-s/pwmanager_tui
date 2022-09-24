@@ -12,6 +12,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::pbes::EncryptionScheme;
 
 //use der::Document;
 
@@ -220,60 +221,36 @@ impl Password<'_> {
     pub fn encrypt_with_password<'a>(
         &self,
         file: &str,
-        salt: &'a [u8],
-        iv: &'a [u8; 16],
     ) -> Result<EncryptionScheme<'a>, Box<dyn std::error::Error>> {
-        encrypt_file(self.get(), file, salt, iv)
+        encrypt_file(self.get(), file)
     }
 }
 /* Creates an encryption scheme and saves to a file with name file */
-pub fn create_and_save_to_der(file: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let iterations = 20_000;
-    let salt = Password::generate_random_string(8);
-    let iv_string = Password::generate_random_string(16);
-    let iv: &[u8; 16] = iv_string.as_bytes().try_into().unwrap();
-    let params = Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt.as_bytes(), iv)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let encrypt_scheme = EncryptionScheme::Pbes2(params);
-    save_to_der(file, &encrypt_scheme)?;
-    Ok(())
+pub fn create_and_save_to_file(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    unimplemented!()
 }
 
 /* Encrypt file using the given password, salt and iv. Return the resulting encryption scheme */
-pub fn encrypt_file(
+pub fn encrypt_file<'a>(
     password: &str,
     file: &str,
-) -> Result<(ChaCha20Poly1305 Nonce), Box<dyn std::error::Error>> {
+) -> Result<EncryptionScheme<'a>, Box<dyn std::error::Error>> {
+    let ec = EncryptionScheme::default();
     let mut f = File::open(file)?;
     let mut content = Vec::new();
     f.read_to_end(&mut content)?;
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    let password_hash = argon2.hash_passwod(password.as_bytes(), &salt)?;
+    let encrypted_content = ec.encrypt(password, &content, file.as_bytes())?;
 
-
-    let cipher = ChaCha20Poly1305::new_from_slice(&hash)?;
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
-    let payload = Payload {
-        msg: &content,
-        aad: file,
-    };
-    let encrypted_content = cipher.encrypt(&nonce, payload)?;
     let mut f = File::create(file)?;
     f.write_all(&encrypted_content)?;
-    Ok((cipher, nonce))
+    Ok(ec)
 }
 
-pub fn save_to_der<'a>(
+pub fn save_to_file<'a>(
     file: &str,
     ec_scheme: &EncryptionScheme<'a>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut content: [u8; 128] = [0; 128];
-    let ec_content = ec_scheme
-        .encode_to_slice(&mut content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let doc = Document::from_der(ec_content)?;
-    doc.write_der_file(file)?;
 
     Ok(())
 }
@@ -286,55 +263,24 @@ pub fn decrypt_file<'a>(
     let mut encrypted_content: Vec<u8> = Vec::new();
     let mut f = File::open(file)?;
     f.read_to_end(&mut encrypted_content)?;
-    let decrypted_content = ec_scheme
-        .decrypt(password, &encrypted_content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+    let decrypted_content = ec_scheme.decrypt(password, &encrypted_content, file.as_bytes())?;
 
     let mut f = File::create(file)?;
     f.write_all(&decrypted_content)?;
     Ok(())
 }
 
-/* Encrypt file with password, hash it and save hash to a file*/
+/* Encrypt file with password, hash it and save scheme to a file*/
 pub fn password_encrypt_file(
     password: &str,
     file: &str,
     der_file: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let salt = Password::generate_random_string(8);
-    let iv_string = Password::generate_random_string(16);
-    let iv: &[u8; 16] = iv_string.as_bytes().try_into().unwrap();
-    let ec_scheme = encrypt_file(password, file, &salt.as_bytes(), iv)?;
-    save_to_der(der_file, &ec_scheme)?;
+    let ec = encrypt_file(password, file)?;
+    save_to_file(file, &ec)?;
     Ok(())
 }
 
 /* Encrypt file with password using the scheme and hash from der_file */
-pub fn encrypt_from_der(
-    password: &str,
-    file: &str,
-    der_file: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut f = File::open(file)?;
-    let mut content = Vec::new();
-    f.read_to_end(&mut content)?;
-    let doc = Document::read_der_file(der_file)?;
-    let ec_scheme: EncryptionScheme = doc.decode_msg()?;
-    let encrypted_content = ec_scheme
-        .encrypt(password, &content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let mut f = File::create(file)?;
-    f.write_all(&encrypted_content)?;
-    Ok(())
-}
 
 /* Decrypt file with password and scheme from der file */
-pub fn decrypt_from_der(
-    password: &str,
-    file: &str,
-    der_file: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let doc = Document::read_der_file(der_file)?;
-    let ec_scheme: EncryptionScheme = doc.decode_msg()?;
-    decrypt_file(password, file, &ec_scheme)
-}

@@ -1,9 +1,10 @@
 pub mod password;
-pub mod ui;
+pub mod pbes;
+//pub mod ui;
 
 use crate::password::PasswordEntries;
 use crate::password::{ModuleList, HOME_ENV};
-use crate::ui::{run_app, ModuleUI};
+//use crate::ui::{run_app, ModuleUI};
 use std::io;
 
 use std::env;
@@ -15,12 +16,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use password::{decrypt_file, encrypt_file};
 use tui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /*
     let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
     let mut file = env::var(HOME_ENV)?;
     base_path.push(".pwmanager");
@@ -54,5 +57,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     terminal.show_cursor()?;
 
+    Ok(())
+    */
+    test_argon()
+}
+
+fn test_argon() -> Result<(), Box<dyn std::error::Error>> {
+    let ec = encrypt_file("password", "src/test.txt")?;
+    decrypt_file("password", "src/test.txt", &ec)?;
     Ok(())
 }

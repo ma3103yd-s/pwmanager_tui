@@ -5,9 +5,11 @@
  * Deserialize the Argon2 struct from the file and decrypt content
  * */
 
+use std::io;
+
 use chacha20poly1305::{
-    aead::{Aead, AeadCore, OsRng},
-    ChaCha20Poly1305, Nonce, Payload,
+    aead::{Aead, AeadCore, OsRng, Payload},
+    ChaCha20Poly1305, KeyInit, Nonce,
 };
 
 use argon2::{
@@ -15,29 +17,71 @@ use argon2::{
     Argon2,
 };
 
-pub struct Parameters<'a> {
+pub struct EncryptionScheme<'a> {
     pub kdf: Argon2<'a>,
-    pub encryption: Encryption,
-}
-
-pub struct EncryptionScheme<'a>(Parameters);
-
-struct Encryption {
-    val: ChaCha20Poly1305,
-    nonce: Nonce,
+    pub salt: SaltString,
+    pub nonce: Nonce,
 }
 
 impl<'a> EncryptionScheme<'a> {
-    pub fn encrypt(&self, password: impl AsRef<[u8]>, plaintext: &[u8], aad: &[u8]) {
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2.hash_password(password, &salt)?;
-        let cipher = ChaCha20Poly1305::new_from_slice(password_hash.as_bytes())?;
-        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    pub fn encrypt(
+        &self,
+        password: impl AsRef<[u8]>,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let password_hash = self
+            .kdf
+            .hash_password(password.as_ref(), &self.salt)
+            .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+
+        let hash = password_hash.hash.ok_or("No hash found")?;
+        let cipher = ChaCha20Poly1305::new_from_slice(hash.as_bytes())
+            .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+
         let payload = Payload {
             msg: plaintext,
-            aad: file,
+            aad,
         };
-        let encrypted_content = cipher.encrypt(&nonce, payload)?;
+        let encrypted_content = cipher
+            .encrypt(&self.nonce, payload)
+            .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+        return Ok(encrypted_content);
+    }
+
+    pub fn decrypt(
+        &self,
+        password: impl AsRef<[u8]>,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let password_hash = self
+            .kdf
+            .hash_password(password.as_ref(), &self.salt)
+            .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+
+        let hash = password_hash.hash.ok_or("No hash found")?;
+        let cipher = ChaCha20Poly1305::new_from_slice(hash.as_bytes())
+            .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+
+        let payload = Payload {
+            msg: ciphertext,
+            aad,
+        };
+        let plaintext = cipher
+            .decrypt(&self.nonce, payload)
+            .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+
+        return Ok(plaintext);
+    }
+}
+
+impl<'a> Default for EncryptionScheme<'a> {
+    fn default() -> Self {
+        Self {
+            kdf: Argon2::default(),
+            salt: SaltString::generate(&mut OsRng),
+            nonce: ChaCha20Poly1305::generate_nonce(&mut OsRng),
+        }
     }
 }
