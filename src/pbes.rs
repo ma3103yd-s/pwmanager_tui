@@ -5,16 +5,23 @@
  * Deserialize the Argon2 struct from the file and decrypt content
  * */
 
-use std::io;
+use serde::{
+    de::{self, Deserialize, Deserializer, Error, MapAccess, Visitor},
+    ser::{self, Serialize, SerializeStruct, Serializer},
+};
+use std::{
+    fmt::{self, Write},
+    io,
+};
 
 use chacha20poly1305::{
-    aead::{Aead, AeadCore, OsRng, Payload},
+    aead::{generic_array::GenericArray, Aead, AeadCore, OsRng, Payload},
     ChaCha20Poly1305, KeyInit, Nonce,
 };
 
-use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
+use argon2::{Algorithm, Argon2, Params, Version};
+use password_hash::{
+    self, PasswordHash, PasswordHashString, PasswordHasher, PasswordVerifier, SaltString,
 };
 
 pub struct EncryptionScheme<'a> {
@@ -73,6 +80,106 @@ impl<'a> EncryptionScheme<'a> {
             .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
 
         return Ok(plaintext);
+    }
+}
+
+impl<'a> Serialize for EncryptionScheme<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("EncryptionScheme", 3)?;
+        let mut ph = match self.kdf.hash_password(b"", &self.salt) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(ser::Error::custom(e.to_string()));
+            }
+        };
+        ph.hash = None;
+        state.serialize_field("kdf", &ph.to_string())?;
+        state.serialize_field("salt", self.salt.as_str())?;
+        state.serialize_field("nonce", self.nonce.as_slice())?;
+        state.end()
+    }
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for EncryptionScheme<'a> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Kdf,
+            Salt,
+            Nonce,
+        }
+
+        struct SchemeVisitor;
+
+        impl<'de> Visitor<'de> for SchemeVisitor {
+            type Value = EncryptionScheme<'de>;
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct EncryptionScheme")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<Self::Value, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut kdf = None;
+                let mut salt = None;
+                let mut nonce = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::Kdf => {
+                            if kdf.is_some() {
+                                return Err(de::Error::duplicate_field("kdf"));
+                            }
+                            let val: String = map.next_value()?;
+                            let ph_string = match PasswordHashString::new(&val) {
+                                Ok(v) => v,
+                                Err(e) => return Err(de::Error::custom("Invalid phc string")),
+                            };
+                            let ph: PasswordHash = ph_string.password_hash();
+                            let params: Params = Params::try_from(&ph).unwrap();
+                            let version: Version = ph.version.unwrap().try_into().unwrap();
+                            let arg = Argon2::new(
+                                Algorithm::new(ph.algorithm.as_str()).unwrap(),
+                                version,
+                                params,
+                            );
+                            kdf = Some(arg);
+                        }
+                        Field::Salt => {
+                            if salt.is_some() {
+                                return Err(de::Error::duplicate_field("salt"));
+                            }
+                            let val: String = map.next_value()?;
+                            let salt_string = SaltString::new(&val).ok();
+                            salt = salt_string;
+                        }
+                        Field::Nonce => {
+                            if nonce.is_some() {
+                                return Err(de::Error::duplicate_field("nonce"));
+                            }
+                            let val: Vec<u8> = map.next_value()?;
+                            let arr: &[u8; 12] = &val.try_into().expect("Wrong nonce length");
+                            let val = Nonce::from(arr.clone());
+                            nonce = Some(Nonce::from(val));
+                        }
+                    }
+                }
+                let kdf = kdf.ok_or_else(|| de::Error::missing_field("kdf"))?;
+                let salt = salt.ok_or_else(|| de::Error::missing_field("salt"))?;
+                let nonce = nonce.ok_or_else(|| de::Error::missing_field("nonce"))?;
+                Ok(EncryptionScheme { kdf, salt, nonce })
+            }
+        }
+        const FIELDS: &'static [&'static str] = &["kdf", "salt", "nonce"];
+        deserializer.deserialize_struct("EncryptionScheme", FIELDS, SchemeVisitor)
     }
 }
 
