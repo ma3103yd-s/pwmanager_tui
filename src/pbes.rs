@@ -10,14 +10,15 @@ use serde::{
     ser::{self, Serialize, SerializeStruct, Serializer},
 };
 use std::{
-    fmt::{self, Write},
-    io,
+    fmt::{self},
+    io::{self, Read, Write},
 };
 
 use chacha20poly1305::{
     aead::{generic_array::GenericArray, Aead, AeadCore, OsRng, Payload},
     ChaCha20Poly1305, KeyInit, Nonce,
 };
+use std::fs::File;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use password_hash::{
@@ -81,6 +82,37 @@ impl<'a> EncryptionScheme<'a> {
 
         return Ok(plaintext);
     }
+
+    pub fn decrypt_file(
+        &self,
+        password: &str,
+        file: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut encrypted_content: Vec<u8> = Vec::new();
+        let mut f = File::open(file)?;
+        f.read_to_end(&mut encrypted_content)?;
+        let decrypted_content = self.decrypt(password, &encrypted_content, file.as_bytes())?;
+
+        let mut f = File::create(file)?;
+        f.write_all(&decrypted_content)?;
+        Ok(())
+    }
+    pub fn encrypt_file(
+        &self,
+        password: &str,
+        file: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let ec = EncryptionScheme::default();
+        let mut f = File::open(file).expect("FAILED TO OPEN FILE");
+        let mut content = Vec::new();
+        f.read_to_end(&mut content)?;
+        let encrypted_content = self.encrypt(password, &content, file.as_bytes())?;
+        drop(f);
+
+        let mut f = File::create(file)?;
+        f.write_all(&encrypted_content)?;
+        Ok(())
+    }
 }
 
 impl<'a> Serialize for EncryptionScheme<'a> {
@@ -138,8 +170,8 @@ impl<'de: 'a, 'a> Deserialize<'de> for EncryptionScheme<'a> {
                             if kdf.is_some() {
                                 return Err(de::Error::duplicate_field("kdf"));
                             }
-                            let val: String = map.next_value()?;
-                            let ph_string = match PasswordHashString::new(&val) {
+                            let val: &str = map.next_value()?;
+                            let ph_string = match PasswordHashString::new(val) {
                                 Ok(v) => v,
                                 Err(e) => return Err(de::Error::custom("Invalid phc string")),
                             };
@@ -157,25 +189,29 @@ impl<'de: 'a, 'a> Deserialize<'de> for EncryptionScheme<'a> {
                             if salt.is_some() {
                                 return Err(de::Error::duplicate_field("salt"));
                             }
-                            let val: String = map.next_value()?;
-                            let salt_string = SaltString::new(&val).ok();
+                            let val: &str = map.next_value()?;
+                            let salt_string = SaltString::new(val).ok();
                             salt = salt_string;
                         }
                         Field::Nonce => {
                             if nonce.is_some() {
                                 return Err(de::Error::duplicate_field("nonce"));
                             }
-                            let val: Vec<u8> = map.next_value()?;
-                            let arr: &[u8; 12] = &val.try_into().expect("Wrong nonce length");
-                            let val = Nonce::from(arr.clone());
-                            nonce = Some(Nonce::from(val));
+                            let val: Vec<u8> = map.next_value().expect("FAILED");
+                            let arr: [u8; 12] = val.try_into().expect("Wrong nonce length");
+                            let val = Nonce::from(arr);
+                            nonce = Some(val);
                         }
                     }
                 }
                 let kdf = kdf.ok_or_else(|| de::Error::missing_field("kdf"))?;
                 let salt = salt.ok_or_else(|| de::Error::missing_field("salt"))?;
                 let nonce = nonce.ok_or_else(|| de::Error::missing_field("nonce"))?;
-                Ok(EncryptionScheme { kdf, salt, nonce })
+                Ok(EncryptionScheme {
+                    kdf,
+                    salt,
+                    nonce: nonce,
+                })
             }
         }
         const FIELDS: &'static [&'static str] = &["kdf", "salt", "nonce"];

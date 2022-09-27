@@ -90,7 +90,7 @@ impl<'b> ModuleList<'b> {
             Err(e) => {
                 if e.kind() == io::ErrorKind::NotFound {
                     self.modules
-                        .push((Cow::Owned(name.to_owned()), None, Some(entries)));
+                        .push((Cow::Owned(name.to_owned()), Some(entries)));
                     Ok(())
                 } else {
                     Err(Box::new(e))
@@ -113,7 +113,7 @@ impl<'b> ModuleList<'b> {
         Ok(())
     }
 
-    pub fn encrypt_module<'a>(
+    pub fn encrypt_module<'a: 'b>(
         &mut self,
         entry: &mut (Cow<'a, str>, Option<PasswordEntries<'a>>),
         password: &str,
@@ -131,7 +131,7 @@ impl<'b> ModuleList<'b> {
         Ok(())
     }
 
-    pub fn get_module_list() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_module_list(enc: Option<&'b Vec<u8>>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
         base_path.push(".pwmanager");
         let mut mod_list = Self::new();
@@ -151,11 +151,9 @@ impl<'b> ModuleList<'b> {
                         .modules
                         .push((Cow::from(mod_name.into_owned()), None));
                 }
-                if path.file_name().unwrap() == "encryptions.ron" {
-                    let mut f = File::open(path)?;
-                    let mut content: Vec<u8> = Vec::new();
-                    f.read_to_end(&mut content)?;
-                    mod_list.encryptions = ron::de::from_bytes(&content)?;
+                if let Some(content) = enc {
+                    mod_list.encryptions =
+                        ron::de::from_bytes(content).expect("FAILED GETTING LIST");
                 }
             }
         }

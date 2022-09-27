@@ -1,7 +1,8 @@
 use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -19,10 +20,11 @@ use tui::{
     Frame, Terminal,
 };
 
-use crate::password::{
-    create_and_save_to_der, decrypt_from_der, encrypt_from_der, read_from_file, ModuleList,
-    Password, PasswordEntries, HOME_ENV,
-};
+use crate::password::{read_from_file, ModuleList, Password, PasswordEntries, HOME_ENV};
+
+use crate::pbes::EncryptionScheme;
+use ron;
+
 /* Struct to hold UI data */
 pub struct ModuleUI<'a> {
     module_list: ModuleList<'a>,
@@ -85,7 +87,7 @@ impl<'a> ModuleUI<'a> {
     /* Implements selection of passwords*/
     pub fn next_password(&mut self) {
         if let Some(i) = self.module_index {
-            match self.module_list.modules.get(i).and_then(|x| x.2.as_ref()) {
+            match self.module_list.modules.get(i).and_then(|x| x.1.as_ref()) {
                 Some(entries) => {
                     let table_index = match self.table_state.selected() {
                         Some(_table_index) => {
@@ -106,7 +108,7 @@ impl<'a> ModuleUI<'a> {
 
     pub fn previous_password(&mut self) {
         if let Some(i) = self.module_index {
-            match self.module_list.modules.get(i).and_then(|x| x.2.as_ref()) {
+            match self.module_list.modules.get(i).and_then(|x| x.1.as_ref()) {
                 Some(entries) => {
                     let table_index = match self.table_state.selected() {
                         Some(_table_index) => {
@@ -176,13 +178,13 @@ fn draw_module_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleUI
         .module_list
         .modules
         .iter()
-        .map(|(name, _, _)| ListItem::new(name.as_ref()))
+        .map(|(name, _)| ListItem::new(name.as_ref()))
         .enumerate()
         .map(|(i, l)| {
             let style = match app.module_index {
                 Some(index) => {
                     if i == index {
-                        if let Some(_) = app.module_list.modules.get(i).and_then(|x| x.2.as_ref()) {
+                        if let Some(_) = app.module_list.modules.get(i).and_then(|x| x.1.as_ref()) {
                             Style::default().fg(Color::Green)
                         } else {
                             Style::default().fg(Color::Red)
@@ -376,11 +378,7 @@ fn draw_command_list<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut ModuleU
 }
 /* Reads an unencrypted module from the corresponding file */
 pub fn read_unencrypted_module<'a>(
-    m: &mut (
-        Cow<'a, str>,
-        Option<Cow<'a, str>>,
-        Option<PasswordEntries<'a>>,
-    ),
+    m: &mut (Cow<'a, str>, Option<PasswordEntries<'a>>),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
     base_path.push(".pwmanager");
@@ -388,17 +386,14 @@ pub fn read_unencrypted_module<'a>(
     let file = base_path.join(format!("{}.json", f_name));
     let file = file.to_string_lossy();
 
-    m.2 = Some(read_from_file(Some(file.borrow()))?);
+    m.1 = Some(read_from_file(Some(file.borrow()))?);
     Ok(())
 }
 /* Reads a module from an encrypted file.*/
 pub fn read_encrypted_module<'a>(
+    list: &mut HashMap<Cow<'a, str>, EncryptionScheme>,
     password: &str,
-    m: &mut (
-        Cow<'a, str>,
-        Option<Cow<'a, str>>,
-        Option<PasswordEntries<'a>>,
-    ),
+    m: &mut (Cow<'a, str>, Option<PasswordEntries<'a>>),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
     base_path.push(".pwmanager");
@@ -406,10 +401,10 @@ pub fn read_encrypted_module<'a>(
     let file = base_path.join(format!("{}.json", f_name));
     let file = file.to_string_lossy();
 
-    if let Some(der_file) = m.1.as_ref() {
-        decrypt_from_der(password, &file, der_file.borrow())?;
+    if let Some(ec) = list.get(&m.0) {
+        ec.decrypt_file(password, &file)?;
         let et = read_from_file(Some(&file))?;
-        m.2 = Some(et);
+        m.1 = Some(et);
     }
     Ok(())
 }
@@ -420,7 +415,7 @@ fn draw_module_selected<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut Modu
         .module_index
         .and_then(|i| app.module_list.modules.get(i))
         .and_then(|entry| {
-            entry.2.as_ref().and_then(|x| {
+            entry.1.as_ref().and_then(|x| {
                 Some(
                     x.iter()
                         .enumerate()
@@ -457,23 +452,27 @@ fn draw_module_selected<B: Backend>(f: &mut Frame<B>, area: Rect, app: &mut Modu
 /* Encrypts all files that were decrypted. Resets all inputs, passwords and modules to prevent
  * leakage */
 pub fn clean_up(app: &mut ModuleUI) -> Result<(), Box<dyn std::error::Error>> {
+    let base_path = PathBuf::from(env::var(HOME_ENV)?);
     for row in app.module_list.modules.iter_mut() {
         let name = row.0.borrow();
-        if let Some(et) = row.2.as_mut() {
+        if let Some(et) = row.1.as_mut() {
             ModuleList::write_module(name, et)?;
-            if let Some(der_file) = row.1.as_ref() {
+            if let Some(ec) = app.module_list.encryptions.get(&row.0) {
                 if let Some(pw) = app.passwords.get(name) {
-                    let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
-                    base_path.push(format!(".pwmanager\\{}.json", name));
-                    let file_name = base_path.to_string_lossy();
-                    encrypt_from_der(pw, file_name.borrow(), der_file.borrow())?;
+                    let file_name = base_path.join(format!(".pwmanager\\{}.json", name));
+                    let file_name = file_name.to_string_lossy();
+                    ec.encrypt_file(pw, &file_name)?;
                 }
             }
         }
     }
+    let mut enc_file = File::create(base_path.join(".pwmanager\\encryptions.ron"))?;
+    ron::ser::to_writer(enc_file, &app.module_list.encryptions)?;
+
     app.input_string = String::new();
     app.passwords = HashMap::new();
     app.module_list.modules = Vec::new();
+    app.module_list.encryptions = HashMap::new();
     Ok(())
 }
 
@@ -520,12 +519,12 @@ pub fn run_app<B: Backend>(
                             .module_index
                             .and_then(|i| app.module_list.modules.get_mut(i))
                         {
-                            if m.2.is_some() {
+                            if m.1.is_some() {
                                 app.display_module = true;
                                 continue;
                             }
 
-                            match m.1.as_ref() {
+                            match app.module_list.encryptions.get(&m.0) {
                                 Some(_) => {
                                     app.input_mode = InputMode::Inputing;
                                     app.input_to = InputTo::Decrypt;
@@ -567,7 +566,7 @@ pub fn run_app<B: Backend>(
                             .and_then(|i| app.module_list.modules.get_mut(i))
                         {
                             if let Some(k) = &app.table_key {
-                                if let Some(et) = m.2.as_mut() {
+                                if let Some(et) = m.1.as_mut() {
                                     et.remove(k);
                                 }
                             }
@@ -582,7 +581,7 @@ pub fn run_app<B: Backend>(
                                 if let Some(et) = app
                                     .module_index
                                     .and_then(|i| app.module_list.modules.get(i))
-                                    .and_then(|m| m.2.as_ref())
+                                    .and_then(|m| m.1.as_ref())
                                 {
                                     let pw = et.get(k).unwrap();
                                     ctx.set_contents(pw.get().to_owned())?;
@@ -615,7 +614,7 @@ pub fn run_app<B: Backend>(
                                     .and_then(|i| app.module_list.modules.get_mut(i))
                                 {
                                     let pw = Password::new_password32();
-                                    let entry = m.2.get_or_insert(PasswordEntries::new());
+                                    let entry = m.1.get_or_insert(PasswordEntries::new());
                                     entry.insert(Cow::Owned(app.input_string.clone()), pw);
                                     app.input_string = String::new();
                                     app.input_to = InputTo::Nothing;
@@ -634,7 +633,7 @@ pub fn run_app<B: Backend>(
                                         if let Some(pw) = iter.next() {
                                             let pw = pw.get(1..).unwrap_or("");
                                             let password = Password::new_from(pw);
-                                            let entry = m.2.get_or_insert(PasswordEntries::new());
+                                            let entry = m.1.get_or_insert(PasswordEntries::new());
                                             entry.insert(Cow::Owned(name.to_owned()), password);
                                             app.input_string = String::new();
                                             app.input_to = InputTo::Nothing;
@@ -653,7 +652,11 @@ pub fn run_app<B: Backend>(
                                     .module_index
                                     .and_then(|i| app.module_list.modules.get_mut(i))
                                 {
-                                    if let Err(e) = read_encrypted_module(&app.input_string, m) {
+                                    if let Err(e) = read_encrypted_module(
+                                        &mut app.module_list.encryptions,
+                                        &app.input_string,
+                                        m,
+                                    ) {
                                         app.display_error = true;
                                         app.error_message = e.to_string();
 
@@ -678,7 +681,7 @@ pub fn run_app<B: Backend>(
                             InputTo::Encrypt => {
                                 if let Some(m) = app
                                     .module_index
-                                    .and_then(|i| app.module_list.modules.get_mut(i))
+                                    .and_then(|i| app.module_list.modules.get(i))
                                 {
                                     if (app.input_string.is_empty()) {
                                         app.display_error = true;
@@ -687,10 +690,12 @@ pub fn run_app<B: Backend>(
                                     }
                                     let base_path = env::var(HOME_ENV)?;
                                     let name: &str = m.0.borrow();
-                                    let der_file =
-                                        format!("{}\\.pwmanager\\{}.der", base_path, name);
-                                    create_and_save_to_der(&der_file)?;
-                                    m.1 = Some(Cow::Owned(der_file.to_owned()));
+                                    let file = format!("{}\\.pwmanager\\{}.json", base_path, name);
+                                    let ec = EncryptionScheme::default();
+
+                                    //create_and_save_to_der(&der_file)?;
+                                    //m.1 = Some(Cow::Owned(der_file.to_owned()));
+                                    app.module_list.encryptions.insert(m.0.to_owned(), ec);
                                     app.passwords
                                         .insert(m.0.to_owned(), app.input_string.clone());
                                     app.input_string = String::new();
