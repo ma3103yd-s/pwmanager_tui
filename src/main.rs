@@ -1,11 +1,14 @@
 pub mod password;
+pub mod pbes;
 pub mod ui;
 
 use crate::password::PasswordEntries;
-use crate::password::{decrypt_from_der, ModuleList, HOME_ENV};
+use crate::password::{ModuleList, HOME_ENV};
 use crate::ui::{run_app, ModuleUI};
+
+use std::collections::HashMap;
 use std::env;
-use std::io;
+use std::io::{self, Read, Write};
 
 use std::fs::{self, File};
 use std::path::PathBuf;
@@ -15,14 +18,19 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use password::{decrypt_file, decrypt_from_file, encrypt_file, save_to_file};
+use pbes::EncryptionScheme;
 use tui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
 };
 
+use ron::ser::to_writer;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut arg_it = env::args();
-    arg_it.next();
+    //let mut arg_it = env::args();
+    //arg_it.next();
+    /*
     while let Some(arg) = arg_it.next() {
         match arg.as_ref() {
             "-decrypt" => {
@@ -45,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    */
 
     let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
     let mut file = env::var(HOME_ENV)?;
@@ -52,10 +61,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if (!(base_path.try_exists()?)) {
         fs::create_dir(&base_path)?;
     }
+    let enc_file = base_path.join("encryptions.ron");
+    let mut enc_file = File::open(&enc_file).ok();
+    let mut content = enc_file.as_ref().map(|_| Vec::new());
+    if let Some(enc) = enc_file.as_mut() {
+        enc.read_to_end(content.as_mut().unwrap())?;
+        drop(enc);
+    }
     base_path.push("General.json");
-    let mut mod_list = ModuleList::get_module_files()?;
+    let mut mod_list = ModuleList::get_module_list(content.as_ref())?;
     if let Err(_) = File::open(&base_path) {
         let et = PasswordEntries::new();
+        ModuleList::write_module("General", &et)?;
         mod_list.add_module("General", et)?;
     }
     enable_raw_mode()?;

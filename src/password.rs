@@ -2,7 +2,7 @@ use rand::distributions::{Alphanumeric, Uniform};
 use rand::seq::index::sample;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 
 use std::env;
@@ -12,9 +12,13 @@ use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use der::Document;
-use pkcs5::der::{Decode, Encode};
-use pkcs5::{pbes2::Parameters, EncryptionScheme};
+use crate::pbes::EncryptionScheme;
+use ron::ser;
+
+//use der::Document;
+
+//use pkcs5::der::{Decode, Encode};
+//use pkcs5::{pbes2::Parameters, EncryptionScheme};
 
 /* Type declaration for entry of a password */
 pub type PasswordEntries<'a> = HashMap<Cow<'a, str>, Password<'a>>;
@@ -58,17 +62,15 @@ pub fn read_from_file<'a, 'b>(file: Option<&'b str>) -> io::Result<PasswordEntri
 
 /* Struct for list of modules */
 pub struct ModuleList<'a> {
-    pub modules: Vec<(
-        Cow<'a, str>,
-        Option<Cow<'a, str>>,
-        Option<PasswordEntries<'a>>,
-    )>,
+    pub modules: Vec<(Cow<'a, str>, Option<PasswordEntries<'a>>)>,
+    pub encryptions: HashMap<Cow<'a, str>, EncryptionScheme<'a>>,
 }
 
 impl<'b> ModuleList<'b> {
     pub fn new() -> Self {
         Self {
             modules: Vec::new(),
+            encryptions: HashMap::new(),
         }
     }
 
@@ -88,7 +90,7 @@ impl<'b> ModuleList<'b> {
             Err(e) => {
                 if e.kind() == io::ErrorKind::NotFound {
                     self.modules
-                        .push((Cow::Owned(name.to_owned()), None, Some(entries)));
+                        .push((Cow::Owned(name.to_owned()), Some(entries)));
                     Ok(())
                 } else {
                     Err(Box::new(e))
@@ -111,30 +113,25 @@ impl<'b> ModuleList<'b> {
         Ok(())
     }
 
-    pub fn encrypt_module<'a>(
-        entry: &mut (
-            Cow<'a, str>,
-            Option<Cow<'a, str>>,
-            Option<PasswordEntries<'a>>,
-        ),
+    pub fn encrypt_module<'a: 'b>(
+        &mut self,
+        entry: &mut (Cow<'a, str>, Option<PasswordEntries<'a>>),
         password: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let file_path: PathBuf = [
-            env::var(HOME_ENV)?,
-            ".pwmanager/".to_owned(),
-            entry.0.to_string(),
-        ]
-        .iter()
-        .collect();
-        let file_name = file_path.to_string_lossy();
-        let file = format!("{}.json", file_name);
-        let der_file = format!("{}.der", file_name);
-        password_encrypt_file(password, &file, &der_file)?;
-        entry.1 = Some(Cow::Owned(der_file));
+        if let Some(_) = self.encryptions.get(&entry.0) {
+            return Ok(());
+        }
+        let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
+        base_path.push(".pwmanager");
+
+        let file_name = format!("{}.json", &entry.0);
+        let file_name = base_path.join(file_name);
+        let ec = encrypt_file(password, &file_name.to_string_lossy())?;
+        self.encryptions.insert(entry.0.to_owned(), ec);
         Ok(())
     }
 
-    pub fn get_module_files() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_module_list(enc: Option<&'b Vec<u8>>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut base_path = PathBuf::from(env::var(HOME_ENV)?);
         base_path.push(".pwmanager");
         let mut mod_list = Self::new();
@@ -150,23 +147,20 @@ impl<'b> ModuleList<'b> {
                     .to_string_lossy();
                 let extension = path.extension().unwrap();
                 if extension == "json" {
-                    let der_path = path.with_extension("der");
-                    if der_path.is_file() {
-                        mod_list.modules.push((
-                            Cow::from(mod_name.into_owned()),
-                            Some(Cow::from(der_path.to_string_lossy().into_owned())),
-                            None,
-                        ));
-                    } else {
-                        mod_list
-                            .modules
-                            .push((Cow::from(mod_name.into_owned()), None, None))
-                    }
+                    mod_list
+                        .modules
+                        .push((Cow::from(mod_name.into_owned()), None));
+                }
+                if let Some(content) = enc {
+                    mod_list.encryptions =
+                        ron::de::from_bytes(content).expect("FAILED GETTING LIST");
                 }
             }
         }
         Ok(mod_list)
     }
+
+    pub fn get_encryptions(&mut self) {}
 }
 
 /* Struct to hold a password */
@@ -218,58 +212,37 @@ impl Password<'_> {
     pub fn encrypt_with_password<'a>(
         &self,
         file: &str,
-        salt: &'a [u8],
-        iv: &'a [u8; 16],
     ) -> Result<EncryptionScheme<'a>, Box<dyn std::error::Error>> {
-        encrypt_file(self.get(), file, salt, iv)
+        encrypt_file(self.get(), file)
     }
 }
 /* Creates an encryption scheme and saves to a file with name file */
-pub fn create_and_save_to_der(file: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let iterations = 20_000;
-    let salt = Password::generate_random_string(8);
-    let iv_string = Password::generate_random_string(16);
-    let iv: &[u8; 16] = iv_string.as_bytes().try_into().unwrap();
-    let params = Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt.as_bytes(), iv)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let encrypt_scheme = EncryptionScheme::Pbes2(params);
-    save_to_der(file, &encrypt_scheme)?;
-    Ok(())
+pub fn create_and_save_to_file(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    unimplemented!()
 }
 
 /* Encrypt file using the given password, salt and iv. Return the resulting encryption scheme */
 pub fn encrypt_file<'a>(
     password: &str,
     file: &str,
-    salt: &'a [u8],
-    iv: &'a [u8; 16],
 ) -> Result<EncryptionScheme<'a>, Box<dyn std::error::Error>> {
+    let ec = EncryptionScheme::default();
     let mut f = File::open(file)?;
     let mut content = Vec::new();
     f.read_to_end(&mut content)?;
-    let iterations = 20_000;
-    let params = Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt, iv)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let encrypt_scheme = EncryptionScheme::Pbes2(params);
-    let encrypted_content = encrypt_scheme
-        .encrypt(password, &content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+    let encrypted_content = ec.encrypt(password, &content, file.as_bytes())?;
+
     let mut f = File::create(file)?;
     f.write_all(&encrypted_content)?;
-    Ok(encrypt_scheme)
+    Ok(ec)
 }
 
-pub fn save_to_der<'a>(
+pub fn save_to_file<'a>(
     file: &str,
     ec_scheme: &EncryptionScheme<'a>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut content: [u8; 128] = [0; 128];
-    let ec_content = ec_scheme
-        .encode_to_slice(&mut content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let doc = Document::from_der(ec_content)?;
-    doc.write_der_file(file)?;
-
+    let f = File::create(file)?;
+    ser::to_writer(f, ec_scheme)?;
     Ok(())
 }
 
@@ -281,55 +254,37 @@ pub fn decrypt_file<'a>(
     let mut encrypted_content: Vec<u8> = Vec::new();
     let mut f = File::open(file)?;
     f.read_to_end(&mut encrypted_content)?;
-    let decrypted_content = ec_scheme
-        .decrypt(password, &encrypted_content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
+    let decrypted_content = ec_scheme.decrypt(password, &encrypted_content, file.as_bytes())?;
 
     let mut f = File::create(file)?;
     f.write_all(&decrypted_content)?;
     Ok(())
 }
 
-/* Encrypt file with password, hash it and save hash to a file*/
+/* Encrypt file with password, hash it and save scheme to a file*/
 pub fn password_encrypt_file(
     password: &str,
     file: &str,
     der_file: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let salt = Password::generate_random_string(8);
-    let iv_string = Password::generate_random_string(16);
-    let iv: &[u8; 16] = iv_string.as_bytes().try_into().unwrap();
-    let ec_scheme = encrypt_file(password, file, &salt.as_bytes(), iv)?;
-    save_to_der(der_file, &ec_scheme)?;
+    let ec = encrypt_file(password, file)?;
+    save_to_file(file, &ec)?;
     Ok(())
 }
 
 /* Encrypt file with password using the scheme and hash from der_file */
-pub fn encrypt_from_der(
-    password: &str,
-    file: &str,
-    der_file: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut f = File::open(file)?;
-    let mut content = Vec::new();
-    f.read_to_end(&mut content)?;
-    let doc = Document::read_der_file(der_file)?;
-    let ec_scheme: EncryptionScheme = doc.decode_msg()?;
-    let encrypted_content = ec_scheme
-        .encrypt(password, &content)
-        .map_err(|E| io::Error::new(io::ErrorKind::Other, E.to_string()))?;
-    let mut f = File::create(file)?;
-    f.write_all(&encrypted_content)?;
-    Ok(())
-}
 
 /* Decrypt file with password and scheme from der file */
-pub fn decrypt_from_der(
+
+pub fn decrypt_from_file(
     password: &str,
     file: &str,
-    der_file: &str,
+    scheme_file: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let doc = Document::read_der_file(der_file)?;
-    let ec_scheme: EncryptionScheme = doc.decode_msg()?;
-    decrypt_file(password, file, &ec_scheme)
+    let mut f = File::open(scheme_file)?;
+    let mut content: Vec<u8> = Vec::new();
+    f.read_to_end(&mut content)?;
+    let ec: EncryptionScheme = ron::de::from_bytes(&content)?;
+    decrypt_file(password, file, &ec)?;
+    Ok(())
 }
