@@ -1,16 +1,17 @@
 use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
-use std::env;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::{env, io};
 
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
+//use clipboard::ClipboardContext;
+//use clipboard::ClipboardProvider;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use terminal_clipboard::{Clipboard, LocalClipboard};
 use tui::{
     backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -38,7 +39,6 @@ pub struct ModuleUI<'a> {
     input_mode: InputMode,
     input_to: InputTo,
     passwords: HashMap<Cow<'a, str>, String>,
-    ctx: Option<ClipboardContext>,
     display_error: bool,
     error_message: String,
 }
@@ -79,7 +79,6 @@ impl<'a> ModuleUI<'a> {
             input_mode: InputMode::Normal,
             input_to: InputTo::Nothing,
             passwords: HashMap::new(),
-            ctx: ClipboardProvider::new().ok(),
             display_error: false,
             error_message: String::new(),
         }
@@ -577,18 +576,15 @@ pub fn run_app<B: Backend>(
                     }
                     KeyCode::Char('c') => {
                         if let Some(k) = &app.table_key {
-                            if let Some(ctx) = &mut app.ctx {
-                                if let Some(et) = app
-                                    .module_index
-                                    .and_then(|i| app.module_list.modules.get(i))
-                                    .and_then(|m| m.1.as_ref())
-                                {
-                                    let pw = et.get(k).unwrap();
-                                    ctx.set_contents(pw.get().to_owned())?;
-                                }
-                            } else {
-                                app.display_error = true;
-                                app.error_message = "Error copying from clipboard".to_owned();
+                            if let Some(et) = app
+                                .module_index
+                                .and_then(|i| app.module_list.modules.get(i))
+                                .and_then(|m| m.1.as_ref())
+                            {
+                                let pw = et.get(k).unwrap();
+                                terminal_clipboard::set_string(pw.get()).map_err(|e| {
+                                    io::Error::new(io::ErrorKind::Other, e.to_string())
+                                })?;
                             }
                         }
                     }
